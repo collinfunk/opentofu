@@ -218,6 +218,7 @@ func applyDataStoreResourceChange(req providers.ApplyResourceChangeRequest) (res
 // once the configuration is available during import.
 func importDataStore(req providers.ImportResourceStateRequest) (resp providers.ImportResourceStateResponse) {
 	schema := dataStoreResourceSchema()
+
 	v := cty.ObjectVal(map[string]cty.Value{
 		"id": cty.StringVal(req.Target.ID), // TODO: Support identity based imports
 	})

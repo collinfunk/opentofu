@@ -823,7 +823,6 @@ func (p *GRPCProvider) ImportResourceState(ctx context.Context, r providers.Impo
 
 	protoReq := &proto.ImportResourceState_Request{
 		TypeName:           r.TypeName,
-		Id:                 r.Target.ID,
 		ClientCapabilities: clientCapabilities,
 	}
 
@@ -850,6 +849,9 @@ func (p *GRPCProvider) ImportResourceState(ctx context.Context, r providers.Impo
 		protoReq.Identity = &proto.ResourceIdentityData{
 			IdentityData: &proto.DynamicValue{Msgpack: identityMP},
 		}
+	} else {
+		// We're ID based
+		protoReq.Id = r.Target.ID
 	}
 
 	protoResp, err := p.client.ImportResourceState(ctx, protoReq)
@@ -870,6 +872,8 @@ func (p *GRPCProvider) ImportResourceState(ctx context.Context, r providers.Impo
 			resp.Diagnostics = resp.Diagnostics.Append(fmt.Errorf("unknown resource type %q", r.TypeName))
 			continue
 		}
+
+		// TODO: Fetch the identity of what was imported and attach it to the resource
 
 		state, err := decodeDynamicValue(imported.State, resSchema.Block.ImpliedType())
 		if err != nil {

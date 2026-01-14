@@ -211,8 +211,9 @@ type ResourceIdentitySchema struct {
 	// request that the provider upgrade the resource state .
 	Version int64
 
-	// It uses a configschema.Object instead of a configschema.Block because
-	// identity schemas do not have nested blocks.
+	// Body stores the identity schema for the resource.
+	// NOTE: It uses a configschema.Object instead of a configschema.Block because
+	// identity schemas should not contain nested blocks.
 	Body *configschema.Object
 }
 
@@ -370,11 +371,15 @@ type UpgradeResourceStateResponse struct {
 	Diagnostics tfdiags.Diagnostics
 }
 
+// UpgradeResourceIdentityRequest is the request type for upgrading a resource identity.
 type UpgradeResourceIdentityRequest struct {
+	// TypeName is the name of the type to be upgraded
 	TypeName string
 
+	// Version is the version that we are upgrading FROM
 	Version int64
 
+	// RawIdentityJSON is the raw identity JSON that needs to be upgraded by the provider.
 	RawIdentityJSON []byte
 }
 

@@ -230,7 +230,7 @@ func (o *ResourceInstanceObject) DeepCopy() *ResourceInstanceObject {
 		Value:               o.Value,
 		Status:              o.Status,
 		Private:             private,
-		Identity:            o.Identity, // cty.Value is immutable
+		Identity:            o.Identity,
 		Dependencies:        dependencies,
 		CreateBeforeDestroy: o.CreateBeforeDestroy,
 		SkipDestroy:         o.SkipDestroy,

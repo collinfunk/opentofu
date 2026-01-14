@@ -151,7 +151,7 @@ func (ri *ImportResolver) ValidateImportIDs(ctx context.Context, importTarget *I
 		for _, keyData := range repetitions {
 			// Validate either ID or Identity depending on which is set
 			if importTarget.Config.ID != nil {
-				evalDiags = validateImportIdExpression(importTarget.Config.ID, rootCtx, keyData)
+				evalDiags = validateImportIdExpression(ctx, importTarget.Config.ID, rootCtx, keyData)
 				diags = diags.Append(evalDiags)
 			} else if importTarget.Config.Identity != nil {
 				// TODO: we need to know the provider instance here to validate the identity schema
@@ -164,7 +164,7 @@ func (ri *ImportResolver) ValidateImportIDs(ctx context.Context, importTarget *I
 		// The import target is singular, no need to expand
 		// Validate either ID or Identity depending on which is set
 		if importTarget.Config.ID != nil {
-			evalDiags := validateImportIdExpression(importTarget.Config.ID, rootCtx, EvalDataForNoInstanceKey)
+			evalDiags := validateImportIdExpression(ctx, importTarget.Config.ID, rootCtx, EvalDataForNoInstanceKey)
 			diags = diags.Append(evalDiags)
 		} else if importTarget.Config.Identity != nil {
 			// TODO: we need to know the provider instance here to validate the identity schema
@@ -215,11 +215,11 @@ func (ri *ImportResolver) ExpandAndResolveImport(ctx context.Context, importTarg
 		}
 
 		for _, keyData := range repetitions {
-			diags = diags.Append(ri.resolveImport(importTarget, rootCtx, keyData))
+			diags = diags.Append(ri.resolveImport(ctx, importTarget, rootCtx, keyData))
 		}
 	} else {
 		// The import target is singular, no need to expand
-		diags = diags.Append(ri.resolveImport(importTarget, rootCtx, EvalDataForNoInstanceKey))
+		diags = diags.Append(ri.resolveImport(ctx, importTarget, rootCtx, EvalDataForNoInstanceKey))
 	}
 
 	return diags
@@ -230,11 +230,11 @@ func (ri *ImportResolver) ExpandAndResolveImport(ctx context.Context, importTarg
 // EvaluatedConfigImportTarget.
 // This function mutates the EvalContext's ImportResolver, adding the resolved import target.
 // The function errors if we failed to evaluate the ID/Identity or the address.
-func (ri *ImportResolver) resolveImport(importTarget *ImportTarget, ctx EvalContext, keyData instances.RepetitionData) tfdiags.Diagnostics {
+func (ri *ImportResolver) resolveImport(ctx context.Context, importTarget *ImportTarget, evalCtx EvalContext, keyData instances.RepetitionData) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
 	// Evaluate the import address first
-	importAddress, addressDiags := evaluateImportAddress(ctx, importTarget.Config.To, keyData)
+	importAddress, addressDiags := evaluateImportAddress(evalCtx, importTarget.Config.To, keyData)
 	diags = diags.Append(addressDiags)
 	if diags.HasErrors() {
 		return diags
@@ -247,7 +247,7 @@ func (ri *ImportResolver) resolveImport(importTarget *ImportTarget, ctx EvalCont
 	if importTarget.Config.ID != nil {
 		// ID-based import
 		var evalDiags tfdiags.Diagnostics
-		importId, evalDiags = evaluateImportIdExpression(importTarget.Config.ID, ctx, keyData)
+		importId, evalDiags = evaluateImportIdExpression(importTarget.Config.ID, evalCtx, keyData)
 		diags = diags.Append(evalDiags)
 		if diags.HasErrors() {
 			return diags
@@ -263,7 +263,7 @@ func (ri *ImportResolver) resolveImport(importTarget *ImportTarget, ctx EvalCont
 			Provider: importTarget.Config.Provider,
 		}
 
-		provider := ctx.Provider(context.TODO(), providerAddr, addrs.NoKey)
+		provider := evalCtx.Provider(ctx, providerAddr, addrs.NoKey)
 		if provider == nil {
 			return diags.Append(&hcl.Diagnostic{
 				Severity: hcl.DiagError,
@@ -291,7 +291,7 @@ func (ri *ImportResolver) resolveImport(importTarget *ImportTarget, ctx EvalCont
 
 		resourceIdentityType := identitySchema.Body.ImpliedType()
 
-		importIdentity, evalDiags = evaluateImportIdentityExpression(context.TODO(), importTarget.Config.Identity, ctx, keyData, resourceIdentityType)
+		importIdentity, evalDiags = evaluateImportIdentityExpression(ctx, importTarget.Config.Identity, evalCtx, keyData, resourceIdentityType)
 		diags = diags.Append(evalDiags)
 		if diags.HasErrors() {
 			return diags

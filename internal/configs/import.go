@@ -76,6 +76,7 @@ func decodeImportBlock(block *hcl.Block) (*Import, hcl.Diagnostics) {
 	}
 
 	if identityExists {
+		// It's okay to set both ID and identity here, we will error about it later
 		imp.Identity = identityAttr.Expr
 	}
 

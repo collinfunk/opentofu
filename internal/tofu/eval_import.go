@@ -120,8 +120,8 @@ func evaluateImportIdentityExpression(ctx context.Context, expr hcl.Expression, 
 
 // validateImportIdExpression checks for any potential issues in the import id expression,
 // allowing unknowns as this is part of the validate phase
-func validateImportIdExpression(expr hcl.Expression, evalCtx EvalContext, keyData instances.RepetitionData) tfdiags.Diagnostics {
-	_, diags := evaluateImportExpression(context.TODO(), expr, evalCtx, keyData, cty.String, "id", true)
+func validateImportIdExpression(ctx context.Context, expr hcl.Expression, evalCtx EvalContext, keyData instances.RepetitionData) tfdiags.Diagnostics {
+	_, diags := evaluateImportExpression(ctx, expr, evalCtx, keyData, cty.String, "id", true)
 	return diags
 }
 

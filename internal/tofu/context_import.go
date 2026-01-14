@@ -286,10 +286,9 @@ func (ri *ImportResolver) resolveImport(ctx context.Context, importTarget *Impor
 		// Identity-based import
 		var evalDiags tfdiags.Diagnostics
 
-		// We'll need to know what provider instance we're talking to
 		resourceType := importAddress.Resource.Resource.Type
 		providerAddr := addrs.AbsProviderConfig{
-			Module:   importAddress.Module.Module(),
+			Module:   importAddress.Module.Module(), // TODO: Check if we can use the root module here, because import blocks are only allowed in the root module
 			Provider: importTarget.Config.Provider,
 		}
 

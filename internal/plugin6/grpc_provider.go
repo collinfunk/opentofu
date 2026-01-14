@@ -163,6 +163,15 @@ func (p *GRPCProvider) getProviderSchema(ctx context.Context) (resp providers.Ge
 		resp.EphemeralResources[name] = convert.ProtoToEphemeralProviderSchema(res)
 	}
 
+	identitySchemas := p.GetResourceIdentitySchemas(ctx)
+	for name, idSchema := range identitySchemas.IdentitySchemas {
+		if resSchema, ok := resp.ResourceTypes[name]; ok {
+			resSchema.IdentitySchema = idSchema.Body
+			resSchema.IdentitySchemaVersion = idSchema.Version
+			resp.ResourceTypes[name] = resSchema
+		}
+	}
+
 	if protoResp.ServerCapabilities != nil {
 		resp.ServerCapabilities.PlanDestroy = protoResp.ServerCapabilities.PlanDestroy
 		resp.ServerCapabilities.GetProviderSchemaOptional = protoResp.ServerCapabilities.GetProviderSchemaOptional
@@ -189,6 +198,73 @@ func (p *GRPCProvider) getProtoProviderSchema(ctx context.Context) (*proto6.GetP
 	p.hasFetchedSchema = true
 
 	return resp, err
+}
+
+func (p *GRPCProvider) UpgradeResourceIdentity(ctx context.Context, req providers.UpgradeResourceIdentityRequest) (resp providers.UpgradeResourceIdentityResponse) {
+	logger.Trace("GRPCProvider.v6: UpgradeResourceIdentity")
+
+	protoReq := &proto6.UpgradeResourceIdentity_Request{
+		TypeName: req.TypeName,
+		Version:  req.Version,
+		RawIdentity: &proto6.RawState{
+			Json: req.RawIdentityJSON,
+		},
+	}
+
+	protoResp, err := p.client.UpgradeResourceIdentity(ctx, protoReq)
+	if err != nil {
+		resp.Diagnostics = resp.Diagnostics.Append(grpcErr(err))
+		return resp
+	}
+	resp.Diagnostics = resp.Diagnostics.Append(convert.ProtoToDiagnostics(protoResp.Diagnostics))
+
+	if protoResp.UpgradedIdentity == nil || protoResp.UpgradedIdentity.IdentityData == nil {
+		return resp
+	}
+
+	identitySchemas := p.GetResourceIdentitySchemas(ctx)
+	identitySchema, ok := identitySchemas.IdentitySchemas[req.TypeName]
+	if !ok {
+		resp.Diagnostics = resp.Diagnostics.Append(fmt.Errorf("no identity schema for %q", req.TypeName))
+		return resp
+	}
+
+	identity, err := decodeDynamicValue(protoResp.UpgradedIdentity.IdentityData, identitySchema.Body.ImpliedType())
+	if err != nil {
+		resp.Diagnostics = resp.Diagnostics.Append(err)
+		return resp
+	}
+	resp.UpgradedIdentity = identity
+
+	return resp
+}
+
+func (p *GRPCProvider) GetResourceIdentitySchemas(context.Context) providers.GetResourceIdentitySchemasResponse {
+	logger.Trace("GRPCProvider.v6: GetResourceIdentitySchemas")
+
+	// TODO: Check global cache, similar to provider schema?
+	resp := providers.GetResourceIdentitySchemasResponse{
+		IdentitySchemas: make(map[string]providers.ResourceIdentitySchema),
+	}
+
+	protoResponse, err := p.client.GetResourceIdentitySchemas(p.ctx, new(proto6.GetResourceIdentitySchemas_Request))
+	if err != nil {
+		// TODO: Check error types that can happen, for now let's just throw all
+		resp.Diagnostics = resp.Diagnostics.Append(grpcErr(err))
+		return resp
+	}
+
+	resp.Diagnostics = resp.Diagnostics.Append(convert.ProtoToDiagnostics(protoResponse.Diagnostics))
+
+	if resp.Diagnostics.HasErrors() {
+		return resp
+	}
+
+	for resource, schema := range protoResponse.IdentitySchemas {
+		resp.IdentitySchemas[resource] = *convert.ProtoToResourceIdentitySchema(schema)
+	}
+
+	return resp
 }
 
 func (p *GRPCProvider) ValidateProviderConfig(ctx context.Context, r providers.ValidateProviderConfigRequest) (resp providers.ValidateProviderConfigResponse) {
@@ -459,6 +535,24 @@ func (p *GRPCProvider) ReadResource(ctx context.Context, r providers.ReadResourc
 		ClientCapabilities: clientCapabilities,
 	}
 
+	// Attach the identity if it is available
+	if !r.PriorIdentity.IsNull() {
+		identitySchemas := p.GetResourceIdentitySchemas(ctx)
+		if identitySchema, ok := identitySchemas.IdentitySchemas[r.TypeName]; ok {
+			identityMP, err := msgpack.Marshal(r.PriorIdentity, identitySchema.Body.ImpliedType())
+			if err != nil {
+				resp.Diagnostics = resp.Diagnostics.Append(err)
+				return resp
+			}
+			protoReq.CurrentIdentity = &proto6.ResourceIdentityData{
+				IdentityData: &proto6.DynamicValue{Msgpack: identityMP},
+			}
+		} else {
+			resp.Diagnostics = resp.Diagnostics.Append(fmt.Errorf("no identity schema found for resource type %q", r.TypeName))
+			return resp
+		}
+	}
+
 	if metaSchema.Block != nil {
 		metaMP, err := msgpack.Marshal(r.ProviderMeta, metaSchema.Block.ImpliedType())
 		if err != nil {
@@ -482,6 +576,19 @@ func (p *GRPCProvider) ReadResource(ctx context.Context, r providers.ReadResourc
 	}
 	resp.NewState = state
 	resp.Private = protoResp.Private
+
+	// Process identity from response
+	if protoResp.NewIdentity != nil && protoResp.NewIdentity.IdentityData != nil {
+		identitySchemas := p.GetResourceIdentitySchemas(ctx)
+		if identitySchema, ok := identitySchemas.IdentitySchemas[r.TypeName]; ok {
+			identity, err := decodeDynamicValue(protoResp.NewIdentity.IdentityData, identitySchema.Body.ImpliedType())
+			if err != nil {
+				resp.Diagnostics = resp.Diagnostics.Append(err)
+				return resp
+			}
+			resp.NewIdentity = identity
+		}
+	}
 
 	resp.Diagnostics = resp.Diagnostics.Append(validation.WriteOnlyAttributes(resSchema.Block, resp.NewState, r.TypeName))
 
@@ -541,6 +648,21 @@ func (p *GRPCProvider) PlanResourceChange(ctx context.Context, r providers.PlanR
 		ClientCapabilities: clientCapabilities,
 	}
 
+	// Attach prior identity if available
+	if !r.PriorIdentity.IsNull() {
+		identitySchemas := p.GetResourceIdentitySchemas(ctx)
+		if identitySchema, ok := identitySchemas.IdentitySchemas[r.TypeName]; ok {
+			identityMP, err := msgpack.Marshal(r.PriorIdentity, identitySchema.Body.ImpliedType())
+			if err != nil {
+				resp.Diagnostics = resp.Diagnostics.Append(err)
+				return resp
+			}
+			protoReq.PriorIdentity = &proto6.ResourceIdentityData{
+				IdentityData: &proto6.DynamicValue{Msgpack: identityMP},
+			}
+		}
+	}
+
 	if metaSchema.Block != nil {
 		metaMP, err := msgpack.Marshal(r.ProviderMeta, metaSchema.Block.ImpliedType())
 		if err != nil {
@@ -569,6 +691,19 @@ func (p *GRPCProvider) PlanResourceChange(ctx context.Context, r providers.PlanR
 	}
 
 	resp.PlannedPrivate = protoResp.PlannedPrivate
+
+	// Process planned identity from response
+	if protoResp.PlannedIdentity != nil && protoResp.PlannedIdentity.IdentityData != nil {
+		identitySchemas := p.GetResourceIdentitySchemas(ctx)
+		if identitySchema, ok := identitySchemas.IdentitySchemas[r.TypeName]; ok {
+			identity, err := decodeDynamicValue(protoResp.PlannedIdentity.IdentityData, identitySchema.Body.ImpliedType())
+			if err != nil {
+				resp.Diagnostics = resp.Diagnostics.Append(err)
+				return resp
+			}
+			resp.PlannedIdentity = identity
+		}
+	}
 
 	resp.LegacyTypeSystem = protoResp.LegacyTypeSystem
 
@@ -625,6 +760,21 @@ func (p *GRPCProvider) ApplyResourceChange(ctx context.Context, r providers.Appl
 		PlannedPrivate: r.PlannedPrivate,
 	}
 
+	// Add planned identity to request if available
+	if !r.PlannedIdentity.IsNull() {
+		identitySchemas := p.GetResourceIdentitySchemas(ctx)
+		if identitySchema, ok := identitySchemas.IdentitySchemas[r.TypeName]; ok {
+			identityMP, err := msgpack.Marshal(r.PlannedIdentity, identitySchema.Body.ImpliedType())
+			if err != nil {
+				resp.Diagnostics = resp.Diagnostics.Append(err)
+				return resp
+			}
+			protoReq.PlannedIdentity = &proto6.ResourceIdentityData{
+				IdentityData: &proto6.DynamicValue{Msgpack: identityMP},
+			}
+		}
+	}
+
 	if metaSchema.Block != nil {
 		metaMP, err := msgpack.Marshal(r.ProviderMeta, metaSchema.Block.ImpliedType())
 		if err != nil {
@@ -650,6 +800,19 @@ func (p *GRPCProvider) ApplyResourceChange(ctx context.Context, r providers.Appl
 	}
 	resp.NewState = state
 
+	// Decode new identity from response if present
+	if protoResp.NewIdentity != nil && protoResp.NewIdentity.IdentityData != nil {
+		identitySchemas := p.GetResourceIdentitySchemas(ctx)
+		if identitySchema, ok := identitySchemas.IdentitySchemas[r.TypeName]; ok {
+			identity, err := decodeDynamicValue(protoResp.NewIdentity.IdentityData, identitySchema.Body.ImpliedType())
+			if err != nil {
+				resp.Diagnostics = resp.Diagnostics.Append(err)
+				return resp
+			}
+			resp.NewIdentity = identity
+		}
+	}
+
 	resp.LegacyTypeSystem = protoResp.LegacyTypeSystem
 
 	resp.Diagnostics = resp.Diagnostics.Append(validation.WriteOnlyAttributes(resSchema.Block, resp.NewState, r.TypeName))
@@ -668,8 +831,33 @@ func (p *GRPCProvider) ImportResourceState(ctx context.Context, r providers.Impo
 
 	protoReq := &proto6.ImportResourceState_Request{
 		TypeName:           r.TypeName,
-		Id:                 r.ID,
+		Id:                 r.Target.ID,
 		ClientCapabilities: clientCapabilities,
+	}
+
+	// If importing by identity, encode the identity value
+	if r.Target.IsIdentityBased() {
+		identitySchemas := p.GetResourceIdentitySchemas(ctx)
+		if identitySchemas.Diagnostics.HasErrors() {
+			resp.Diagnostics = identitySchemas.Diagnostics
+			return resp
+		}
+
+		identitySchema, ok := identitySchemas.IdentitySchemas[r.TypeName]
+		if !ok {
+			resp.Diagnostics = resp.Diagnostics.Append(fmt.Errorf("no identity schema found for resource type %q", r.TypeName))
+			return resp
+		}
+
+		identityMP, err := msgpack.Marshal(r.Target.Identity, identitySchema.Body.ImpliedType())
+		if err != nil {
+			resp.Diagnostics = resp.Diagnostics.Append(err)
+			return resp
+		}
+
+		protoReq.Identity = &proto6.ResourceIdentityData{
+			IdentityData: &proto6.DynamicValue{Msgpack: identityMP},
+		}
 	}
 
 	protoResp, err := p.client.ImportResourceState(ctx, protoReq)
@@ -997,13 +1185,12 @@ func (p *GRPCProvider) CallFunction(ctx context.Context, r providers.CallFunctio
 					FunctionArgument: i,
 				}
 			}
-
 		}
 
 		encodedArg, err := msgpack.Marshal(arg, paramSpec.Type)
 		if err != nil {
 			resp.Error = err
-			return
+			return resp
 		}
 
 		protoReq.Arguments[i] = &proto6.DynamicValue{
@@ -1014,7 +1201,7 @@ func (p *GRPCProvider) CallFunction(ctx context.Context, r providers.CallFunctio
 	protoResp, err := p.client.CallFunction(ctx, protoReq)
 	if err != nil {
 		resp.Error = err
-		return
+		return resp
 	}
 
 	if protoResp.Error != nil {
@@ -1025,11 +1212,11 @@ func (p *GRPCProvider) CallFunction(ctx context.Context, r providers.CallFunctio
 			err.FunctionArgument = int(*protoResp.Error.FunctionArgument)
 		}
 		resp.Error = err
-		return
+		return resp
 	}
 
 	resp.Result, resp.Error = decodeDynamicValue(protoResp.Result, spec.Return)
-	return
+	return resp
 }
 
 // closing the grpc connection is final, and tofu will call it at the end of every phase.

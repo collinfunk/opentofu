@@ -12,6 +12,8 @@ import (
 	"sync"
 
 	"github.com/hashicorp/hcl/v2"
+	"github.com/zclconf/go-cty/cty"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs"
 	"github.com/opentofu/opentofu/internal/instances"
@@ -108,9 +110,9 @@ func NewImportResolver() *ImportResolver {
 	return &ImportResolver{imports: make(map[string]EvaluatedConfigImportTarget)}
 }
 
-// ValidateImportIDs is used during the validation phase to validate the import IDs of all import targets.
-// This function works similarly to ExpandAndResolveImport, but it only validates the IDs of the import targets and does not modify the EvalContext.
-// We only validate the IDs during the validation phase. Otherwise, we might cause a false positive,
+// ValidateImportIDs is used during the validation phase to validate the import IDs/Identities of all import targets.
+// This function works similarly to ExpandAndResolveImport, but it only validates the IDs/Identities of the import targets and does not modify the EvalContext.
+// We only validate the IDs/Identities during the validation phase. Otherwise, we might cause a false positive,
 // since we do not know if the user intends to use the '-generate-config-out' option to generate additional configuration, which would make invalid Addresses valid
 func (ri *ImportResolver) ValidateImportIDs(ctx context.Context, importTarget *ImportTarget, evalCtx EvalContext) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
@@ -147,13 +149,29 @@ func (ri *ImportResolver) ValidateImportIDs(ctx context.Context, importTarget *I
 		}
 
 		for _, keyData := range repetitions {
-			evalDiags = validateImportIdExpression(importTarget.Config.ID, rootCtx, keyData)
-			diags = diags.Append(evalDiags)
+			// Validate either ID or Identity depending on which is set
+			if importTarget.Config.ID != nil {
+				evalDiags = validateImportIdExpression(importTarget.Config.ID, rootCtx, keyData)
+				diags = diags.Append(evalDiags)
+			} else if importTarget.Config.Identity != nil {
+				// TODO: we need to know the provider instance here to validate the identity schema
+				// But for now, let's just validate it without knowing the schema and use a dynamic type
+				evalDiags = validateImportIdentityExpression(ctx, importTarget.Config.Identity, rootCtx, keyData, cty.DynamicPseudoType)
+				diags = diags.Append(evalDiags)
+			}
 		}
 	} else {
 		// The import target is singular, no need to expand
-		evalDiags := validateImportIdExpression(importTarget.Config.ID, rootCtx, EvalDataForNoInstanceKey)
-		diags = diags.Append(evalDiags)
+		// Validate either ID or Identity depending on which is set
+		if importTarget.Config.ID != nil {
+			evalDiags := validateImportIdExpression(importTarget.Config.ID, rootCtx, EvalDataForNoInstanceKey)
+			diags = diags.Append(evalDiags)
+		} else if importTarget.Config.Identity != nil {
+			// TODO: we need to know the provider instance here to validate the identity schema
+			// But for now, let's just validate it without knowing the schema and use a dynamic type
+			evalDiags := validateImportIdentityExpression(ctx, importTarget.Config.Identity, rootCtx, EvalDataForNoInstanceKey, cty.DynamicPseudoType)
+			diags = diags.Append(evalDiags)
+		}
 	}
 
 	return diags
@@ -207,24 +225,77 @@ func (ri *ImportResolver) ExpandAndResolveImport(ctx context.Context, importTarg
 	return diags
 }
 
-// resolveImport resolves the ID and address of an ImportTarget originating from an import block,
+// resolveImport resolves the ID/Identity and address of an ImportTarget originating from an import block,
 // when we have the context necessary to resolve them. The resolved import target would be an
 // EvaluatedConfigImportTarget.
 // This function mutates the EvalContext's ImportResolver, adding the resolved import target.
-// The function errors if we failed to evaluate the ID or the address.
+// The function errors if we failed to evaluate the ID/Identity or the address.
 func (ri *ImportResolver) resolveImport(importTarget *ImportTarget, ctx EvalContext, keyData instances.RepetitionData) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
-	importId, evalDiags := evaluateImportIdExpression(importTarget.Config.ID, ctx, keyData)
-	diags = diags.Append(evalDiags)
-	if diags.HasErrors() {
-		return diags
-	}
-
+	// Evaluate the import address first
 	importAddress, addressDiags := evaluateImportAddress(ctx, importTarget.Config.To, keyData)
 	diags = diags.Append(addressDiags)
 	if diags.HasErrors() {
 		return diags
+	}
+
+	// Evaluate either ID or Identity depending on which is set
+	var importId string
+	var importIdentity cty.Value
+
+	if importTarget.Config.ID != nil {
+		// ID-based import
+		var evalDiags tfdiags.Diagnostics
+		importId, evalDiags = evaluateImportIdExpression(importTarget.Config.ID, ctx, keyData)
+		diags = diags.Append(evalDiags)
+		if diags.HasErrors() {
+			return diags
+		}
+	} else if importTarget.Config.Identity != nil {
+		// Identity-based import
+		var evalDiags tfdiags.Diagnostics
+
+		// We'll need to know what provider instance we're talking to
+		resourceType := importAddress.Resource.Resource.Type
+		providerAddr := addrs.AbsProviderConfig{
+			Module:   importAddress.Module.Module(),
+			Provider: importTarget.Config.Provider,
+		}
+
+		provider := ctx.Provider(context.TODO(), providerAddr, addrs.NoKey)
+		if provider == nil {
+			return diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Unable to determine provider for import identity",
+				Detail:   fmt.Sprintf("The provider %q could not be found when trying to import the resource %q. Please ensure the provider is declared and configured properly.", providerAddr, importAddress),
+				Subject:  importTarget.Config.Identity.Range().Ptr(),
+			})
+		}
+
+		identitySchemasResponse := provider.GetResourceIdentitySchemas(context.TODO())
+		diags = diags.Append(identitySchemasResponse.Diagnostics)
+		if diags.HasErrors() {
+			return diags
+		}
+
+		identitySchema, exists := identitySchemasResponse.IdentitySchemas[resourceType]
+		if !exists {
+			return diags.Append(&hcl.Diagnostic{
+				Severity: hcl.DiagError,
+				Summary:  "Unable to determine identity schema for import identity",
+				Detail:   fmt.Sprintf("The provider %q does not provide an identity schema for the resource type %q, which is required when trying to import the resource %q using identity-based import. Please ensure the resource type supports identity-based import.", providerAddr, resourceType, importAddress),
+				Subject:  importTarget.Config.Identity.Range().Ptr(),
+			})
+		}
+
+		resourceIdentityType := identitySchema.Body.ImpliedType()
+
+		importIdentity, evalDiags = evaluateImportIdentityExpression(context.TODO(), importTarget.Config.Identity, ctx, keyData, resourceIdentityType)
+		diags = diags.Append(evalDiags)
+		if diags.HasErrors() {
+			return diags
+		}
 	}
 
 	ri.mu.Lock()
@@ -242,9 +313,10 @@ func (ri *ImportResolver) resolveImport(importTarget *ImportTarget, ctx EvalCont
 	}
 
 	ri.imports[resolvedImportKey] = EvaluatedConfigImportTarget{
-		Config: importTarget.Config,
-		Addr:   importAddress,
-		ID:     importId,
+		Config:   importTarget.Config,
+		Addr:     importAddress,
+		ID:       importId,
+		Identity: importIdentity,
 	}
 
 	if keyData == EvalDataForNoInstanceKey {

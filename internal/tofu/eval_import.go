@@ -93,8 +93,8 @@ func evaluateImportExpression(
 	return val, diags
 }
 
-func evaluateImportIdExpression(expr hcl.Expression, evalCtx EvalContext, keyData instances.RepetitionData) (string, tfdiags.Diagnostics) {
-	val, diags := evaluateImportExpression(context.TODO(), expr, evalCtx, keyData, cty.String, "id", false)
+func evaluateImportIdExpression(ctx context.Context, expr hcl.Expression, evalCtx EvalContext, keyData instances.RepetitionData) (string, tfdiags.Diagnostics) {
+	val, diags := evaluateImportExpression(ctx, expr, evalCtx, keyData, cty.String, "id", false)
 	if diags.HasErrors() {
 		return "", diags
 	}

@@ -277,7 +277,7 @@ func (ri *ImportResolver) resolveImport(ctx context.Context, importTarget *Impor
 	if importTarget.Config.ID != nil {
 		// ID-based import
 		var evalDiags tfdiags.Diagnostics
-		importId, evalDiags = evaluateImportIdExpression(importTarget.Config.ID, evalCtx, keyData)
+		importId, evalDiags = evaluateImportIdExpression(ctx, importTarget.Config.ID, evalCtx, keyData)
 		diags = diags.Append(evalDiags)
 		if diags.HasErrors() {
 			return diags
@@ -302,7 +302,7 @@ func (ri *ImportResolver) resolveImport(ctx context.Context, importTarget *Impor
 			})
 		}
 
-		identitySchemasResponse := provider.GetResourceIdentitySchemas(context.TODO())
+		identitySchemasResponse := provider.GetResourceIdentitySchemas(ctx)
 		diags = diags.Append(identitySchemasResponse.Diagnostics)
 		if diags.HasErrors() {
 			return diags

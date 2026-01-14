@@ -117,6 +117,38 @@ func NewImportResolver() *ImportResolver {
 func (ri *ImportResolver) ValidateImportIDs(ctx context.Context, importTarget *ImportTarget, evalCtx EvalContext) tfdiags.Diagnostics {
 	var diags tfdiags.Diagnostics
 
+	getIdentitySchemaType := func(ctx context.Context, importTarget *ImportTarget, evalCtx EvalContext) cty.Type {
+		// TODO: During the review process we should determine what should happen here in all of the negative cases, should we error somehow instead of
+		// returning a dynamic type?
+		if importTarget.Config.Provider.Type == "" {
+			// Not much we can do here during validation phase
+			// So we just return dynamic type for now
+			return cty.DynamicPseudoType
+		}
+
+		providerAddr := addrs.AbsProviderConfig{
+			Module:   addrs.RootModule, // Import blocks are only allowed in the root module, this code assumes that the validation around that has happened already
+			Provider: importTarget.Config.Provider,
+		}
+		provider := evalCtx.Provider(ctx, providerAddr, addrs.NoKey)
+		if provider == nil {
+			return cty.DynamicPseudoType
+		}
+
+		identitySchemasResponse := provider.GetResourceIdentitySchemas(ctx)
+		if identitySchemasResponse.Diagnostics.HasErrors() {
+			return cty.DynamicPseudoType
+		}
+
+		resourceType := importTarget.Config.StaticTo.Resource.Type
+		identitySchema, exists := identitySchemasResponse.IdentitySchemas[resourceType]
+		if !exists {
+			return cty.DynamicPseudoType
+		}
+
+		return identitySchema.Body.ImpliedType()
+	}
+
 	// The import block expressions are declared within the root module.
 	// We need to explicitly use the context with the path of the root module, so that all references will be
 	// relative to the root module
@@ -154,9 +186,8 @@ func (ri *ImportResolver) ValidateImportIDs(ctx context.Context, importTarget *I
 				evalDiags = validateImportIdExpression(ctx, importTarget.Config.ID, rootCtx, keyData)
 				diags = diags.Append(evalDiags)
 			} else if importTarget.Config.Identity != nil {
-				// TODO: we need to know the provider instance here to validate the identity schema
-				// But for now, let's just validate it without knowing the schema and use a dynamic type
-				evalDiags = validateImportIdentityExpression(ctx, importTarget.Config.Identity, rootCtx, keyData, cty.DynamicPseudoType)
+				identityType := getIdentitySchemaType(ctx, importTarget, evalCtx)
+				evalDiags = validateImportIdentityExpression(ctx, importTarget.Config.Identity, rootCtx, keyData, identityType)
 				diags = diags.Append(evalDiags)
 			}
 		}
@@ -167,9 +198,8 @@ func (ri *ImportResolver) ValidateImportIDs(ctx context.Context, importTarget *I
 			evalDiags := validateImportIdExpression(ctx, importTarget.Config.ID, rootCtx, EvalDataForNoInstanceKey)
 			diags = diags.Append(evalDiags)
 		} else if importTarget.Config.Identity != nil {
-			// TODO: we need to know the provider instance here to validate the identity schema
-			// But for now, let's just validate it without knowing the schema and use a dynamic type
-			evalDiags := validateImportIdentityExpression(ctx, importTarget.Config.Identity, rootCtx, EvalDataForNoInstanceKey, cty.DynamicPseudoType)
+			identityType := getIdentitySchemaType(ctx, importTarget, evalCtx)
+			evalDiags := validateImportIdentityExpression(ctx, importTarget.Config.Identity, rootCtx, EvalDataForNoInstanceKey, identityType)
 			diags = diags.Append(evalDiags)
 		}
 	}

@@ -264,7 +264,7 @@ func (ri *ImportResolver) resolveImport(ctx context.Context, importTarget *Impor
 	var diags tfdiags.Diagnostics
 
 	// Evaluate the import address first
-	importAddress, addressDiags := evaluateImportAddress(evalCtx, importTarget.Config.To, keyData)
+	importAddress, addressDiags := evaluateImportAddress(ctx, evalCtx, importTarget.Config.To, keyData)
 	diags = diags.Append(addressDiags)
 	if diags.HasErrors() {
 		return diags

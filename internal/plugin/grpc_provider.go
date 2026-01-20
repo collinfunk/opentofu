@@ -195,6 +195,15 @@ func (p *GRPCProvider) getProviderSchema(ctx context.Context) (resp providers.Ge
 		resp.Functions[name] = convert.ProtoToFunctionSpec(fn)
 	}
 
+	identitySchemas := p.GetResourceIdentitySchemas(ctx)
+	for name, idSchema := range identitySchemas.IdentitySchemas {
+		if resSchema, ok := resp.ResourceTypes[name]; ok {
+			resSchema.IdentitySchema = idSchema.Body
+			resSchema.IdentitySchemaVersion = idSchema.Version
+			resp.ResourceTypes[name] = resSchema
+		}
+	}
+
 	if protoResp.ServerCapabilities != nil {
 		resp.ServerCapabilities.PlanDestroy = protoResp.ServerCapabilities.PlanDestroy
 		resp.ServerCapabilities.GetProviderSchemaOptional = protoResp.ServerCapabilities.GetProviderSchemaOptional
@@ -223,7 +232,7 @@ func (p *GRPCProvider) getProtoProviderSchema(ctx context.Context) (*proto.GetPr
 	return resp, err
 }
 
-func (p *GRPCProvider) GetResourceIdentitySchemas(context.Context) providers.GetResourceIdentitySchemasResponse {
+func (p *GRPCProvider) GetResourceIdentitySchemas(ctx context.Context) providers.GetResourceIdentitySchemasResponse {
 	logger.Trace("GRPCProvider.v6: GetResourceIdentitySchemas")
 
 	// TODO: Check global cache, similar to provider schema?
@@ -231,7 +240,7 @@ func (p *GRPCProvider) GetResourceIdentitySchemas(context.Context) providers.Get
 		IdentitySchemas: make(map[string]providers.ResourceIdentitySchema),
 	}
 
-	protoResponse, err := p.client.GetResourceIdentitySchemas(p.ctx, new(proto.GetResourceIdentitySchemas_Request))
+	protoResponse, err := p.client.GetResourceIdentitySchemas(ctx, new(proto.GetResourceIdentitySchemas_Request))
 	if err != nil {
 		// TODO: Check error types that can happen, for now let's just throw all
 		resp.Diagnostics = resp.Diagnostics.Append(grpcErr(err))

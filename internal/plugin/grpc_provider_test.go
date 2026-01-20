@@ -58,6 +58,15 @@ func mockProviderClientWithSchema(t *testing.T, schema *proto.GetProviderSchema_
 		gomock.Any(),
 	).Return(schema, nil)
 
+	// We also always need a resource identity schema method
+	client.EXPECT().GetResourceIdentitySchemas(
+		gomock.Any(),
+		gomock.Any(),
+		gomock.Any(),
+	).Return(&proto.GetResourceIdentitySchemas_Response{
+		IdentitySchemas: map[string]*proto.ResourceIdentitySchema{},
+	}, nil).AnyTimes()
+
 	return client
 }
 
@@ -220,6 +229,14 @@ func TestGRPCProvider_GetSchema_GlobalCacheEnabled(t *testing.T) {
 		ServerCapabilities: &proto.ServerCapabilities{GetProviderSchemaOptional: true},
 	}, nil)
 
+	client.EXPECT().GetResourceIdentitySchemas(
+		gomock.Any(),
+		gomock.Any(),
+		gomock.Any(),
+	).Times(1).Return(&proto.GetResourceIdentitySchemas_Response{
+		IdentitySchemas: map[string]*proto.ResourceIdentitySchema{},
+	}, nil)
+
 	// Run GetProviderTwice, expect GetSchema to be called once
 	// Re-initialize the provider before each run to avoid usage of the local cache
 	p := newGRPCProvider(client)
@@ -256,7 +273,15 @@ func TestGRPCProvider_GetSchema_GlobalCacheDisabled(t *testing.T) {
 		ServerCapabilities: &proto.ServerCapabilities{GetProviderSchemaOptional: false},
 	}, nil)
 
-	// Run GetProviderTwice, expect GetSchema to be called once
+	client.EXPECT().GetResourceIdentitySchemas(
+		gomock.Any(),
+		gomock.Any(),
+		gomock.Any(),
+	).Times(2).Return(&proto.GetResourceIdentitySchemas_Response{
+		IdentitySchemas: map[string]*proto.ResourceIdentitySchema{},
+	}, nil)
+
+	// Run GetProviderTwice, expect GetSchema to be called twice
 	// Re-initialize the provider before each run to avoid usage of the local cache
 	p := newGRPCProvider(client)
 	resp := p.GetProviderSchema(t.Context())

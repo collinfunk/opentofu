@@ -300,8 +300,19 @@ func upgradeResourceIdentity(
 		stateIdentityVersion = int64(*src.IdentitySchemaVersion)
 	}
 
-	if stateIdentityVersion >= currentIdentityVersion {
-		// No upgrade needed
+	// Based on the logic in upgradeResourceStateTransform
+	if stateIdentityVersion > currentIdentityVersion {
+		// No downgrading allowed
+		log.Printf("[TRACE] upgradeResourceIdentity: can't downgrade identity for %s from version %d to %d", addr, stateIdentityVersion, currentIdentityVersion)
+		return src, diags.Append(tfdiags.Sourceless(
+			tfdiags.Error,
+			"Resource identity managed by newer provider version",
+			fmt.Sprintf("The current identity of %s was created by a newer provider version than is currently selected. Upgrade the %s provider to work with this identity.", addr, addr.Resource.Resource.ImpliedProvider()),
+		))
+	}
+
+	if stateIdentityVersion == currentIdentityVersion {
+		// No upgrade necessary
 		return src, diags
 	}
 

@@ -30,7 +30,8 @@ func dataStoreResourceSchema() providers.Schema {
 }
 
 func dataStoreResourceIdentitySchema() providers.ResourceIdentitySchema {
-	// Similar to dataStoreResourceSchema above, but we proovide the identity schema
+	// Similar to dataStoreResourceSchema above, but we provide the identity schema
+	// Note for developers: If you edit this schema, please snure that you correctly implement UpgradeResourceIdentity too
 	return providers.ResourceIdentitySchema{
 		Version: 1,
 		Body: &configschema.Object{

@@ -17,6 +17,7 @@ import (
 	"github.com/opentofu/opentofu/internal/states"
 	"github.com/opentofu/opentofu/internal/tfdiags"
 	"github.com/zclconf/go-cty/cty"
+	ctyjson "github.com/zclconf/go-cty/cty/json"
 )
 
 // stateTransformArgs is a struct for convenience that holds the parameters required for state transformations
@@ -276,4 +277,59 @@ func removeRemovedAttrs(v interface{}, ty cty.Type) bool {
 		}
 	}
 	return modified
+}
+
+// upgradeResourceIdentity upgrades the identity data if the schema version has changed
+func upgradeResourceIdentity(
+	ctx context.Context,
+	addr addrs.AbsResourceInstance,
+	src *states.ResourceInstanceObjectSrc,
+	provider providers.Interface,
+	providerSchema providers.ProviderSchema,
+	diags tfdiags.Diagnostics,
+) (*states.ResourceInstanceObjectSrc, tfdiags.Diagnostics) {
+	typeName := addr.Resource.Resource.Type
+	resourceSchema, ok := providerSchema.ResourceTypes[typeName]
+	if !ok {
+		return src, diags
+	}
+
+	currentIdentityVersion := resourceSchema.IdentitySchemaVersion
+	stateIdentityVersion := int64(0)
+	if src.IdentitySchemaVersion != nil {
+		stateIdentityVersion = int64(*src.IdentitySchemaVersion)
+	}
+
+	if stateIdentityVersion >= currentIdentityVersion {
+		// No upgrade needed
+		return src, diags
+	}
+
+	log.Printf("[TRACE] upgradeResourceIdentity: upgrading identity for %s from version %d to %d", addr, stateIdentityVersion, currentIdentityVersion)
+
+	identityResp := provider.UpgradeResourceIdentity(ctx, providers.UpgradeResourceIdentityRequest{
+		TypeName:        typeName,
+		Version:         stateIdentityVersion,
+		RawIdentityJSON: src.IdentityJSON,
+	})
+	diags = diags.Append(identityResp.Diagnostics)
+
+	if identityResp.Diagnostics.HasErrors() {
+		return src, diags
+	}
+
+	// Re-encode the upgraded identity
+	identitySchema := resourceSchema.IdentitySchema
+	if identitySchema != nil {
+		newIdentityJSON, err := ctyjson.Marshal(identityResp.UpgradedIdentity, identitySchema.ImpliedType())
+		if err != nil {
+			diags = diags.Append(fmt.Errorf("failed to encode upgraded identity: %w", err))
+			return src, diags
+		}
+		src.IdentityJSON = newIdentityJSON
+		newVersion := uint64(currentIdentityVersion)
+		src.IdentitySchemaVersion = &newVersion
+	}
+
+	return src, diags
 }

@@ -193,6 +193,86 @@ func TestGRPCProvider_GetSchema(t *testing.T) {
 	}
 }
 
+func TestGRPCProvider_GetSchema_WithResourceIdentitySchemas(t *testing.T) {
+	// This test ensures that the provider client correctly attaches the resource identities to the resource schemas
+	// when you call GetProviderSchema.
+
+	ctrl := gomock.NewController(t)
+	client := mockproto.NewMockProviderClient(ctrl)
+
+	resourceName := "test_resource"
+	resourceSchema := &proto.Schema{
+		Version: 1,
+		Block: &proto.Schema_Block{
+			Attributes: []*proto.Schema_Attribute{
+				{
+					Name:     "id",
+					Type:     []byte(`"string"`),
+					Required: true,
+				},
+				{
+					Name:     "name",
+					Type:     []byte(`"string"`),
+					Optional: true,
+				},
+			},
+		},
+	}
+
+	identitySchema := &proto.ResourceIdentitySchema{
+		Version: 1,
+		IdentityAttributes: []*proto.ResourceIdentitySchema_IdentityAttribute{
+			{
+				Name:              "id",
+				Type:              []byte(`"string"`),
+				RequiredForImport: true,
+			},
+		},
+	}
+
+	client.EXPECT().GetSchema(gomock.Any(), gomock.Any(), gomock.Any()).Return(&proto.GetProviderSchema_Response{
+		Provider: &proto.Schema{
+			Block: &proto.Schema_Block{},
+		},
+		ResourceSchemas: map[string]*proto.Schema{
+			resourceName: resourceSchema,
+		},
+	}, nil)
+
+	client.EXPECT().GetResourceIdentitySchemas(
+		gomock.Any(),
+		gomock.Any(),
+		gomock.Any(),
+	).Return(&proto.GetResourceIdentitySchemas_Response{
+		IdentitySchemas: map[string]*proto.ResourceIdentitySchema{
+			resourceName: identitySchema,
+		},
+	}, nil)
+
+	p := newGRPCProvider(client)
+	resp := p.GetProviderSchema(t.Context())
+
+	checkDiags(t, resp.Diagnostics)
+
+	resource, ok := resp.ResourceTypes[resourceName]
+	if !ok {
+		t.Fatalf("expected resource %q to be in response", resourceName)
+	}
+
+	// Main part of the test: Ensure that the resource identity schema was attached correctly
+	if resource.IdentitySchema == nil {
+		t.Fatal("expected IdentitySchema to be populated, got nil")
+	}
+
+	if resource.IdentitySchemaVersion != 1 {
+		t.Errorf("expected IdentitySchemaVersion to be %d, got %d", 1, resource.IdentitySchemaVersion)
+	}
+
+	if !resource.IdentitySchema.ImpliedType().HasAttribute("id") {
+		t.Errorf("expected IdentitySchema to have attribute 'id'")
+	}
+}
+
 // Ensure that gRPC errors are returned early.
 // Reference: https://github.com/hashicorp/terraform/issues/31047
 func TestGRPCProvider_GetSchema_GRPCError(t *testing.T) {

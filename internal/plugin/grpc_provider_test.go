@@ -409,6 +409,89 @@ func TestGRPCProvider_GetSchema_ResponseErrorDiagnostic(t *testing.T) {
 	checkDiagsHasError(t, resp.Diagnostics)
 }
 
+func TestGRPCProvider_UpgradeResourceIdentity(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	client := mockproto.NewMockProviderClient(ctrl)
+
+	// initial identity
+	client.EXPECT().GetResourceIdentitySchemas(
+		gomock.Any(),
+		gomock.Any(),
+	).Return(&proto.GetResourceIdentitySchemas_Response{
+		IdentitySchemas: map[string]*proto.ResourceIdentitySchema{
+			"test_resource": {
+				Version: 1,
+				IdentityAttributes: []*proto.ResourceIdentitySchema_IdentityAttribute{
+					{
+						Name:              "id",
+						Type:              []byte(`"string"`),
+						RequiredForImport: true,
+					},
+					{
+						Name:              "region",
+						Type:              []byte(`"string"`),
+						RequiredForImport: true,
+					},
+				},
+			},
+		},
+	}, nil)
+
+	// upgraded entity from the provider
+	upgradedIdentity := cty.ObjectVal(map[string]cty.Value{
+		"id":     cty.StringVal("resource-123"),
+		"region": cty.StringVal("eu-west-1"),
+	})
+
+	upgradedBytes, err := msgpack.Marshal(upgradedIdentity, upgradedIdentity.Type())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client.EXPECT().UpgradeResourceIdentity(gomock.Any(), gomock.Any()).Return(&proto.UpgradeResourceIdentity_Response{
+		UpgradedIdentity: &proto.ResourceIdentityData{
+			IdentityData: &proto.DynamicValue{
+				Msgpack: upgradedBytes,
+			},
+		},
+	}, nil)
+
+	// Ensure that our UpgradeResourceIdentity logic does what it should
+	p := newGRPCProvider(client)
+	resp := p.UpgradeResourceIdentity(t.Context(), providers.UpgradeResourceIdentityRequest{
+		TypeName:        "test_resource",
+		Version:         1,
+		RawIdentityJSON: []byte(`{"id":"resource-123"}`),
+	})
+
+	checkDiags(t, resp.Diagnostics)
+
+	if !resp.UpgradedIdentity.RawEquals(upgradedIdentity) {
+		t.Errorf("unexpected upgraded identity:\ngot:  %#v\nwant: %#v",
+			resp.UpgradedIdentity, upgradedIdentity)
+	}
+}
+
+func TestGRPCProvider_UpgradeResourceIdentity_ProviderError(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	client := mockproto.NewMockProviderClient(ctrl)
+
+	client.EXPECT().UpgradeResourceIdentity(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("mock error"))
+
+	p := newGRPCProvider(client)
+	resp := p.UpgradeResourceIdentity(t.Context(), providers.UpgradeResourceIdentityRequest{
+		TypeName:        "test_resource",
+		Version:         1,
+		RawIdentityJSON: []byte(`{"id":"123"}`),
+	})
+
+	checkDiagsHasError(t, resp.Diagnostics)
+
+	if !strings.Contains(resp.Diagnostics.Err().Error(), "mock error") {
+		t.Errorf("Expected mock error")
+	}
+}
+
 func TestGRPCProvider_PrepareProviderConfig(t *testing.T) {
 	client := mockProviderClient(t)
 	p := newGRPCProvider(client)

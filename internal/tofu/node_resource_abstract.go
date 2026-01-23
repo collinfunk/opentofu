@@ -12,6 +12,8 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/zclconf/go-cty/cty"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/communicator/shared"
 	"github.com/opentofu/opentofu/internal/configs"
@@ -20,7 +22,6 @@ import (
 	"github.com/opentofu/opentofu/internal/lang"
 	"github.com/opentofu/opentofu/internal/states"
 	"github.com/opentofu/opentofu/internal/tfdiags"
-	"github.com/zclconf/go-cty/cty"
 )
 
 // traceNameValidateResource is a standardized trace span name we use for the
@@ -610,7 +611,7 @@ func (n *NodeAbstractResourceInstance) readResourceInstanceState(ctx context.Con
 		prevAddr:             prevAddr,
 		provider:             provider,
 		objectSrc:            src,
-		currentSchema:        schema,
+		currentSchema:        schema.Block,
 		currentSchemaVersion: currentVersion,
 	}
 	if isResourceMovedToDifferentType(addr, prevAddr) {
@@ -631,7 +632,7 @@ func (n *NodeAbstractResourceInstance) readResourceInstanceState(ctx context.Con
 		return nil, diags
 	}
 
-	obj, err := src.Decode(schema.ImpliedType())
+	obj, err := src.Decode(schema.Block.ImpliedType())
 	if err != nil {
 		diags = diags.Append(err)
 	}
@@ -674,7 +675,7 @@ func (n *NodeAbstractResourceInstance) readResourceInstanceStateDeposed(ctx cont
 		prevAddr:             prevAddr,
 		provider:             provider,
 		objectSrc:            src,
-		currentSchema:        schema,
+		currentSchema:        schema.Block,
 		currentSchemaVersion: currentVersion,
 	}
 	if isResourceMovedToDifferentType(addr, prevAddr) {
@@ -699,7 +700,7 @@ func (n *NodeAbstractResourceInstance) readResourceInstanceStateDeposed(ctx cont
 		return nil, diags
 	}
 
-	obj, err := src.Decode(schema.ImpliedType())
+	obj, err := src.Decode(schema.Block.ImpliedType())
 	if err != nil {
 		diags = diags.Append(err)
 	}

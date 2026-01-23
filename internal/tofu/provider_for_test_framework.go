@@ -10,12 +10,13 @@ import (
 	"fmt"
 	"hash/fnv"
 
+	"github.com/zclconf/go-cty/cty"
+
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/configs/configschema"
 	"github.com/opentofu/opentofu/internal/configs/hcl2shim"
 	"github.com/opentofu/opentofu/internal/providers"
 	"github.com/opentofu/opentofu/internal/tfdiags"
-	"github.com/zclconf/go-cty/cty"
 )
 
 var _ providers.Interface = &providerForTest{}
@@ -68,14 +69,15 @@ func (p providerForTest) PlanResourceChange(_ context.Context, r providers.PlanR
 	}
 
 	resSchema, _ := p.schema.SchemaForResourceType(addrs.ManagedResourceMode, r.TypeName)
+	schema := resSchema.Block
 
 	// Filter out computed-only attributes from the schema to avoid them being used incorrectly
 	// later on. This resolves https://github.com/opentofu/opentofu/issues/3644
-	filteredConfig := filterComputedOnlyAttributes(resSchema, r.Config)
+	filteredConfig := filterComputedOnlyAttributes(schema, r.Config)
 
 	var resp providers.PlanResourceChangeResponse
 	resp.PlannedState, resp.Diagnostics = newMockValueComposer(r.TypeName).
-		ComposeBySchema(resSchema, filteredConfig, p.overrideValues)
+		ComposeBySchema(schema, filteredConfig, p.overrideValues)
 
 	return resp
 }
@@ -107,11 +109,9 @@ func (p providerForTest) ApplyResourceChange(_ context.Context, r providers.Appl
 
 func (p providerForTest) ReadDataSource(_ context.Context, r providers.ReadDataSourceRequest) providers.ReadDataSourceResponse {
 	resSchema, _ := p.schema.SchemaForResourceType(addrs.DataResourceMode, r.TypeName)
-
+	
 	var resp providers.ReadDataSourceResponse
-
-	resp.State, resp.Diagnostics = newMockValueComposer(r.TypeName).
-		ComposeBySchema(resSchema, r.Config, p.overrideValues)
+	resp.State, resp.Diagnostics = newMockValueComposer(r.TypeName).ComposeBySchema(resSchema.Block, r.Config, p.overrideValues)
 
 	return resp
 }

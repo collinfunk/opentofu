@@ -421,7 +421,10 @@ func (n *NodePlannableResourceInstance) managedResourceExecute(ctx context.Conte
 		}
 
 		if importing {
-			change.Importing = &plans.Importing{ID: n.importTarget.ID}
+			change.Importing = &plans.Importing{
+				ID:       n.importTarget.ID,
+				Identity: n.importTarget.Identity,
+			}
 		}
 
 		// FIXME: here we update the change to reflect the reason for
@@ -719,7 +722,7 @@ func (n *NodePlannableResourceInstance) importState(ctx context.Context, evalCtx
 		// First we generate the contents of the resource block for use within
 		// the planning node. Then we wrap it in an enclosing resource block to
 		// pass into the plan for rendering.
-		generatedHCLAttributes, generatedDiags := n.generateHCLStringAttributes(n.Addr, instanceRefreshState, schema)
+		generatedHCLAttributes, generatedDiags := n.generateHCLStringAttributes(n.Addr, instanceRefreshState, schema.Block)
 		diags = diags.Append(generatedDiags)
 
 		n.generatedConfigHCL = genconfig.WrapResourceContents(n.Addr, generatedHCLAttributes)

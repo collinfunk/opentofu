@@ -8,6 +8,8 @@ package planning
 import (
 	"context"
 	"log"
+	"slices"
+	"sync"
 
 	"github.com/opentofu/opentofu/internal/addrs"
 	"github.com/opentofu/opentofu/internal/engine/internal/execgraph"
@@ -16,6 +18,7 @@ import (
 	"github.com/opentofu/opentofu/internal/logging"
 	"github.com/opentofu/opentofu/internal/plans"
 	"github.com/opentofu/opentofu/internal/states"
+	"github.com/opentofu/opentofu/internal/tfdiags"
 )
 
 // planContext is our shared state for the various parts of a single call
@@ -50,6 +53,15 @@ type planContext struct {
 
 	providerInstances  *providerInstances
 	ephemeralInstances *ephemeralInstances
+
+	// Stack of ephemeral and provider close functions
+	// Given the current state of the planning engine, we wait until
+	// the end of the run to close all of the "opened" items.  We
+	// also need to close them in a specific order to prevent dependency
+	// conflicts. We posit that for plan, closing in the reverse order of opens
+	// will ensure that this order is correctly preserved.
+	closeStackMu sync.Mutex
+	closeStack   []func(context.Context) tfdiags.Diagnostics
 }
 
 func newPlanContext(evalCtx *eval.EvalContext, prevRoundState *states.State, providers plugins.Providers) *planContext {
@@ -78,7 +90,9 @@ func newPlanContext(evalCtx *eval.EvalContext, prevRoundState *states.State, pro
 //
 // After calling this function the [planContext] object is invalid and must
 // not be used anymore.
-func (p *planContext) Close() *plans.Plan {
+func (p *planContext) Close(ctx context.Context) (*plans.Plan, tfdiags.Diagnostics) {
+	var diags tfdiags.Diagnostics
+
 	// We'll freeze the execution graph into a serialized form here, so that
 	// we can recover an equivalent execution graph again during the apply
 	// phase.
@@ -87,24 +101,12 @@ func (p *planContext) Close() *plans.Plan {
 		log.Println("[DEBUG] Planned execution graph:\n" + logging.Indent(execGraph.DebugRepr()))
 	}
 
-	println(execGraph.DebugRepr())
+	p.closeStackMu.Lock()
+	defer p.closeStackMu.Unlock()
 
-	// Re-compile the graph with the planGraphCloser so we can close all of the open providers and
-	// ephemerals in the correct order
-	// The planning process opens ephemerals and providers, but does not know when it is safe to close them.
-	// The two other possible approaches to this would be to pre-compute a partial graph from the config and state
-	// and injecting that into the planning engine or building a much more cumbersome reference counting system
-	compiled, diags := execGraph.Compile(&closeOperations{
-		providerInstances:  p.providerInstances,
-		ephemeralInstances: p.ephemeralInstances,
-	})
-	if diags.HasErrors() {
-		panic(diags.Err())
-	}
-	// Execute the close operations
-	diags = compiled.Execute(context.TODO())
-	if diags.HasErrors() {
-		panic(diags.Err())
+	slices.Reverse(p.closeStack)
+	for _, closer := range p.closeStack {
+		diags = diags.Append(closer(ctx))
 	}
 
 	execGraphOpaque := execGraph.Marshal()
@@ -124,5 +126,5 @@ func (p *planContext) Close() *plans.Plan {
 		// graph so we can round-trip it through saved plan files while
 		// the CLI layer is still working in terms of [plans.Plan].
 		ExecutionGraph: execGraphOpaque,
-	}
+	}, diags
 }

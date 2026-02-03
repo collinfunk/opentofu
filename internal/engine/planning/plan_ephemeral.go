@@ -22,39 +22,24 @@ import (
 // instances, responsible for executing new ephemerals on request and for
 // keeping them running until all of their work is done.
 type ephemeralInstances struct {
-	instances   addrs.Map[addrs.AbsResourceInstance, *ephemeralInstance]
-	instancesMu sync.Mutex
+	closeBlockersMu sync.Mutex
+	closeBlockers   addrs.Map[addrs.AbsResourceInstance, execgraph.RegisterCloseBlockerFunc]
 }
 
 func newEphemeralInstances() *ephemeralInstances {
 	return &ephemeralInstances{
-		instances: addrs.MakeMap[addrs.AbsResourceInstance, *ephemeralInstance](),
+		closeBlockers: addrs.MakeMap[addrs.AbsResourceInstance, execgraph.RegisterCloseBlockerFunc](),
 	}
-}
-
-type ephemeralInstance struct {
-	registerCloseBlocker execgraph.RegisterCloseBlockerFunc
-	closeFunc            shared.EphemeralCloseFunc
 }
 
 func (e *ephemeralInstances) addCloseDependsOn(addr addrs.AbsResourceInstance, dep execgraph.AnyResultRef) {
-	e.instancesMu.Lock()
-	instance := e.instances.Get(addr)
-	e.instancesMu.Unlock()
+	e.closeBlockersMu.Lock()
+	registerCloseBlocker := e.closeBlockers.Get(addr)
+	e.closeBlockersMu.Unlock()
 
-	if instance != nil {
-		instance.registerCloseBlocker(dep)
+	if registerCloseBlocker != nil {
+		registerCloseBlocker(dep)
 	}
-}
-func (e *ephemeralInstances) callClose(ctx context.Context, addr addrs.AbsResourceInstance) tfdiags.Diagnostics {
-	e.instancesMu.Lock()
-	instance := e.instances.Get(addr)
-	e.instancesMu.Unlock()
-
-	if instance != nil {
-		return instance.closeFunc(ctx)
-	}
-	return nil
 }
 
 func (p *planGlue) planDesiredEphemeralResourceInstance(ctx context.Context, inst *eval.DesiredResourceInstance, egb *execgraph.Builder) (cty.Value, execgraph.ResourceInstanceResultRef, tfdiags.Diagnostics) {
@@ -128,12 +113,13 @@ func (p *planGlue) planDesiredEphemeralResourceInstance(ctx context.Context, ins
 
 	closeProviderAfter(closeRef)
 
-	p.planCtx.ephemeralInstances.instancesMu.Lock()
-	p.planCtx.ephemeralInstances.instances.Put(inst.Addr, &ephemeralInstance{
-		registerCloseBlocker: registerCloseBlocker,
-		closeFunc:            closeFunc,
-	})
-	p.planCtx.ephemeralInstances.instancesMu.Unlock()
+	p.planCtx.ephemeralInstances.closeBlockersMu.Lock()
+	p.planCtx.ephemeralInstances.closeBlockers.Put(inst.Addr, registerCloseBlocker)
+	p.planCtx.ephemeralInstances.closeBlockersMu.Unlock()
+
+	p.planCtx.closeStackMu.Lock()
+	p.planCtx.closeStack = append(p.planCtx.closeStack, closeFunc)
+	p.planCtx.closeStackMu.Unlock()
 
 	return newVal, openRef, diags
 }

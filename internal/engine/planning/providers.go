@@ -31,15 +31,11 @@ type providerInstances struct {
 	// before waiting on an object retrieved from it.
 	active   addrs.Map[addrs.AbsProviderInstanceCorrect, *grapheval.Once[providerInstance]]
 	activeMu sync.Mutex
-
-	closers   addrs.Map[addrs.AbsProviderInstanceCorrect, func(context.Context) error]
-	closersMu sync.Mutex
 }
 
 func newProviderInstances() *providerInstances {
 	return &providerInstances{
-		active:  addrs.MakeMap[addrs.AbsProviderInstanceCorrect, *grapheval.Once[providerInstance]](),
-		closers: addrs.MakeMap[addrs.AbsProviderInstanceCorrect, func(context.Context) error](),
+		active: addrs.MakeMap[addrs.AbsProviderInstanceCorrect, *grapheval.Once[providerInstance]](),
 	}
 }
 
@@ -47,11 +43,6 @@ type providerInstance struct {
 	instance             providers.Configured
 	ref                  execgraph.ResultRef[*exec.ProviderClient]
 	registerCloseBlocker execgraph.RegisterCloseBlockerFunc
-}
-
-func (p *providerInstances) callClose(ctx context.Context, addr addrs.AbsProviderInstanceCorrect) error {
-	// This is called after any modifications to the map is active
-	return p.closers.Get(addr)(ctx)
 }
 
 // ProviderClient returns a client for the requested provider instance, using
@@ -80,7 +71,8 @@ func (p *providerInstances) ProviderClient(ctx context.Context, addr addrs.AbsPr
 	p.activeMu.Unlock()
 
 	oracle := planGlue.oracle
-	egb := planGlue.planCtx.execgraphBuilder
+	planCtx := planGlue.planCtx
+	egb := planCtx.execgraphBuilder
 	once := p.active.Get(addr)
 	val, diags := once.Do(ctx, func(ctx context.Context) (providerInstance, tfdiags.Diagnostics) {
 		var result providerInstance
@@ -123,7 +115,7 @@ func (p *providerInstances) ProviderClient(ctx context.Context, addr addrs.AbsPr
 				//
 				// The dependency should already have been populated via planDesiredEphemeralResourceInstance
 				// TODO it's unclear if we can do this before or after the oracle call above
-				planGlue.planCtx.ephemeralInstances.addCloseDependsOn(depInst.Addr, closeResult)
+				planCtx.ephemeralInstances.addCloseDependsOn(depInst.Addr, closeResult)
 			}
 		}
 
@@ -138,19 +130,18 @@ func (p *providerInstances) ProviderClient(ctx context.Context, addr addrs.AbsPr
 		// then this should return "nil, nil" in the error case so that the
 		// caller will treat it the same as a "configuration not valid enough"
 		// problem.
-		ret, diags := planGlue.planCtx.providers.NewConfiguredProvider(ctx, addr.Config.Config.Provider, configVal)
+		ret, diags := planCtx.providers.NewConfiguredProvider(ctx, addr.Config.Config.Provider, configVal)
 		result.instance = ret
 
 		closeCh := make(chan struct{})
 
-		// Register closer for use in planGraphCloseOperations
-		p.closersMu.Lock()
-		p.closers.Put(addr, func(ctx context.Context) error {
+		planCtx.closeStackMu.Lock()
+		planCtx.closeStack = append(planCtx.closeStack, func(ctx context.Context) tfdiags.Diagnostics {
 			println("CLOSING PROVIDER " + addr.String())
 			closeCh <- struct{}{}
-			return ret.Close(ctx)
+			return tfdiags.Diagnostics{}.Append(ret.Close(ctx))
 		})
-		p.closersMu.Unlock()
+		planCtx.closeStackMu.Unlock()
 
 		// This background goroutine deals with closing the provider once it's
 		// no longer needed, and with asking it to gracefully stop if our
